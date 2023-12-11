@@ -1,8 +1,9 @@
+import re
 import slack_sdk
 import os
 import csv
-import datetime
 from dotenv import load_dotenv
+from slack_sdk.errors import SlackApiError
 
 # Charger les variables d'environnement depuis .env
 load_dotenv()
@@ -11,44 +12,36 @@ load_dotenv()
 slack_bot_token = os.getenv('SLACK_BOT_TOKEN')
 client = slack_sdk.WebClient(token=slack_bot_token)
 
-# Lister tous les canaux disponibles
+# Demander le lien du message à l'utilisateur et extraire l'ID du canal et le timestamp
+message_link = input("Entrez le lien du message Slack : ")
+match = re.search(r'\/archives\/(C[A-Z0-9]+)\/p(\d{10})(\d{6})', message_link)
+if not match:
+    print("Lien invalide.")
+    exit(1)
+
+channel_id = match.group(1)
+timestamp = match.group(2) + '.' + match.group(3)
+
+# Récupérer les réactions pour le message spécifié
 try:
-    channels_response = client.conversations_list()
-    channels = channels_response["channels"]
+    reactions_response = client.reactions_get(channel=channel_id, timestamp=timestamp, full=True)
+    reactions = reactions_response.get('message', {}).get('reactions', [])
 
-    for index, channel in enumerate(channels):
-        print(f"{index + 1}. {channel['name']} (ID: {channel['id']})")
-
-    # Demander à l'utilisateur de choisir un canal
-    choice = int(input("Choisissez un canal (entrez le numéro) : "))
-    channel_id = channels[choice - 1]['id']
-
-    # Demander combien de jours en arrière récupérer les messages
-    days_back = int(input("Combien de jours en arrière voulez-vous récupérer les messages ? "))
-    oldest = datetime.datetime.now() - datetime.timedelta(days=days_back)
-    oldest_timestamp = oldest.timestamp()
-
-    # Récupérer les messages dans cet intervalle
-    messages_response = client.conversations_history(channel=channel_id, oldest=oldest_timestamp)
-    messages = messages_response['messages']
-
-    for index, message in enumerate(messages):
-        preview = message['text'][:140] + '...' if len(message['text']) > 50 else message['text']
-        print(f"{index + 1}. {preview} (Timestamp: {message['ts']})")
-
-    # Demander à l'utilisateur de choisir un message
-    message_choice = int(input("Choisissez un message (entrez le numéro) : "))
-    selected_message = messages[message_choice - 1]
-    message_timestamp = selected_message['ts']
-
-    # Récupérer les réactions pour ce message
-    reactions_response = client.reactions_get(channel=channel_id, timestamp=message_timestamp)
+    if not reactions:
+        print("Aucune réaction trouvée pour ce message.")
+        exit(0)
 
     # Préparer les données pour le CSV
     data_to_export = []
 
+    # Compter les réactions
+    reactions_count = {}
+
     # Parcourir chaque réaction et récupérer les informations des utilisateurs
-    for reaction in reactions_response['message']['reactions']:
+    for reaction in reactions:
+        # Compter les réactions
+        reactions_count[reaction['name']] = len(reaction['users'])
+
         for user_id in reaction['users']:
             # Obtenir les informations de l'utilisateur
             user_info = client.users_info(user=user_id)
@@ -65,10 +58,15 @@ try:
     # Créer et écrire dans le fichier CSV
     with open('reactions.csv', mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        writer.writerow(['User ID', 'Alias', 'Email', 'Reaction'])
+        writer.writerow(['User ID', 'Username', 'Email', 'Reaction'])
         writer.writerows(data_to_export)
 
     print("Les données ont été exportées dans reactions.csv")
 
-except Exception as e:
-    print(f"Erreur lors de la récupération des informations : {e}")
+    # Afficher le décompte des réactions
+    print("\nRéactions et leur nombre:")
+    for reaction, count in reactions_count.items():
+        print(f"{reaction}: {count}")
+
+except SlackApiError as e:
+    print(f"Slack API Error: {e.response['error']}")
